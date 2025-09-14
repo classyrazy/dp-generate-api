@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,10 +10,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
     }
 
-    // Launch Puppeteer
+    // Launch Puppeteer with configuration for serverless environments
     const browser = await puppeteer.launch({
       headless: true,
-      args: [
+      executablePath: process.env.NODE_ENV === 'production' 
+        ? await chromium.executablePath()
+        : process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      args: process.env.NODE_ENV === 'production' 
+        ? [...chromium.args, '--hide-scrollbars', '--disable-web-security']
+        : [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
@@ -20,7 +26,9 @@ export async function POST(request: NextRequest) {
         '--no-first-run',
         '--no-zygote',
         '--single-process',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor'
       ],
     });
 
