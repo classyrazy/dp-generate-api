@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
     await browser.close();
 
     // Return the screenshot as a response
-    return new NextResponse(screenshot, {
+    return new NextResponse(Buffer.from(screenshot), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
