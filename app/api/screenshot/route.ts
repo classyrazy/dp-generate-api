@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import fs from 'fs';
-
-// Import regular puppeteer for development
-let puppeteerDev: any = null;
-try {
-  puppeteerDev = require('puppeteer');
-} catch {
-  // puppeteer not available, will use puppeteer-core
-}
 
 export async function POST(request: NextRequest) {
+  let browser;
+  
   try {
     const { url, fileName } = await request.json();
     
@@ -26,56 +19,31 @@ export async function POST(request: NextRequest) {
     let browserArgs;
     
     if (isProduction) {
-      // Production: Use @sparticuz/chromium
+      // Production: Use @sparticuz/chromium optimized for serverless
+      executablePath = await chromium.executablePath();
+      browserArgs = chromium.args;
+    } else {
+      // Development: Use @sparticuz/chromium for consistency
       executablePath = await chromium.executablePath();
       browserArgs = [
         ...chromium.args,
-        '--hide-scrollbars',
-        '--disable-web-security',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
       ];
-    } else {
-      // Development: Try to find local Chrome, fallback to @sparticuz/chromium
-      const localChromePaths = [
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // macOS
-        '/usr/bin/google-chrome-stable', // Linux
-        '/usr/bin/google-chrome', // Linux alternative
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Windows
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', // Windows 32-bit
-      ];
-      
-      // Try to find local Chrome first
-      for (const path of localChromePaths) {
-        try {
-          if (fs.existsSync(path)) {
-            executablePath = path;
-            break;
-          }
-        } catch {
-          continue;
-        }
-      }
-      
-      // If no local Chrome found, use @sparticuz/chromium
-      if (!executablePath) {
-        executablePath = await chromium.executablePath();
-        browserArgs = chromium.args;
-      } else {
-        browserArgs = [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--disable-web-security',
-        ];
-      }
     }
 
-    // Launch Puppeteer with puppeteer-core
-    const browser = await puppeteer.launch({
+    // Launch Puppeteer with error handling
+    console.log('Launching browser with executablePath:', executablePath ? 'Available' : 'None');
+    console.log('Browser args length:', browserArgs.length);
+    
+    browser = await puppeteer.launch({
       headless: true,
       executablePath,
       args: browserArgs,
+      timeout: 30000,
     });
+    
+    console.log('Browser launched successfully');
 
     const page = await browser.newPage();
     
@@ -86,25 +54,40 @@ export async function POST(request: NextRequest) {
       deviceScaleFactor: 2 // Higher resolution for better quality
     });
 
+    console.log('Navigating to URL:', url);
     // Navigate to the URL
     await page.goto(url, { 
       waitUntil: 'networkidle0',
       timeout: 30000 
     });
 
-    // Wait for images to load
-    await page.evaluate(() => {
-      return Promise.all(
-        Array.from(document.images, img => {
-          if (img.complete) return Promise.resolve();
-          return new Promise((resolve, reject) => {
-            img.addEventListener('load', resolve);
-            img.addEventListener('error', reject);
-          });
-        })
-      );
-    });
+    console.log('Page loaded, waiting for images');
+    // Wait for images to load with timeout
+    try {
+      await page.evaluate(() => {
+        return Promise.all(
+          Array.from(document.images, img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error('Image load timeout')), 10000);
+              img.addEventListener('load', () => {
+                clearTimeout(timeout);
+                resolve(void 0);
+              });
+              img.addEventListener('error', () => {
+                clearTimeout(timeout);
+                resolve(void 0); // Continue even if some images fail
+              });
+            });
+          })
+        );
+      });
+    } catch (imageError) {
+      console.warn('Some images failed to load:', imageError);
+      // Continue with screenshot anyway
+    }
 
+    console.log('Taking screenshot');
     // Take screenshot
     const screenshot = await page.screenshot({
       type: 'png',
@@ -117,6 +100,9 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    console.log('Screenshot taken successfully, size:', screenshot.length);
+    
+    await page.close();
     await browser.close();
 
     // Return the screenshot as a response
@@ -130,6 +116,16 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('Screenshot error:', error);
+    
+    // Ensure browser is closed even on error
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        console.error('Error closing browser:', closeError);
+      }
+    }
+    
     return NextResponse.json(
       { error: 'Failed to generate screenshot', details: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
